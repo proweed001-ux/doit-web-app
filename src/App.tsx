@@ -1,5 +1,5 @@
-import DoitPivotApp from './DoitPivotApp';
+import DoitPivotApp2 from './DoitPivotApp2';
 
 export default function App() {
-  return <DoitPivotApp />;
+  return <DoitPivotApp2 />;
 }
