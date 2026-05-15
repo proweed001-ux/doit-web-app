@@ -1,5 +1,5 @@
-import DoitAppThai from './DoitAppThai';
+import DoitAppShared from './DoitAppShared';
 
 export default function App() {
-  return <DoitAppThai />;
+  return <DoitAppShared />;
 }
