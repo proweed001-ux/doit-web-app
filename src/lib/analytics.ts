@@ -1,5 +1,5 @@
 import type { Mapping, Profile, Row } from './engine';
-import { bucketHour, chooseHeader, makeTemplate, parseDateParts, safeText, normalize } from './engine';
+import { bucketHour, chooseHeader, parseDateParts, safeText } from './engine';
 
 export type RowAnalysis = {
   rowIndex: number;
@@ -29,12 +29,18 @@ function median(nums: number[]): number {
   const a = [...nums].filter((n) => Number.isFinite(n)).sort((x, y) => x - y);
   if (!a.length) return 0;
   const mid = Math.floor(a.length / 2);
-  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  return a.length % 2 ? a[mid]! : (a[mid - 1]! + a[mid]!) / 2;
 }
 
 function mad(nums: number[], med: number): number {
   const deviations = nums.map((n) => Math.abs(n - med));
   return median(deviations) || 1;
+}
+
+function numberFrom(row: Row, header: string | undefined): number {
+  if (!header) return Number.NaN;
+  const value = row[header];
+  return typeof value === 'number' ? value : Number(String(value ?? '').replace(/,/g, ''));
 }
 
 export function numericSummary(rows: Row[]): NumericStat[] {
@@ -78,8 +84,7 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
     const store = safeText(picked.store ? row[picked.store] : '');
     const rawDate = safeText(picked.date ? row[picked.date] : '');
     const rawTime = safeText(picked.time ? row[picked.time] : '');
-    const amountRaw = picked.invoiceAmount ? row[picked.invoiceAmount] : (picked.lineTotal ? row[picked.lineTotal] : '');
-    const amount = typeof amountRaw === 'number' ? amountRaw : Number(String(amountRaw).replace(/,/g, ''));
+    const amount = Number.isFinite(numberFrom(row, picked.invoiceAmount)) ? numberFrom(row, picked.invoiceAmount) : numberFrom(row, picked.lineTotal);
     const parsedTime = parseDateParts(rawTime || rawDate);
     const hour = parsedTime.hour;
     if (Number.isFinite(amount)) amounts.push(amount);
@@ -91,10 +96,11 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
     }
     const reasons: string[] = [];
     let score = 0;
-    (['invoiceNo', 'invoiceAmount', 'store', 'date'] as const).forEach((f) => {
-      if (!picked[f] || !safeText(row[picked[f] as string])) {
+    (['invoiceNo', 'invoiceAmount', 'store', 'date'] as const).forEach((field) => {
+      const header = picked[field];
+      if (!header || !safeText(row[header])) {
         score += weights.missing;
-        reasons.push(`missing ${f}`);
+        reasons.push(`missing ${field}`);
       }
     });
     if (!invoiceNo && picked.invoiceNo) {
@@ -141,9 +147,9 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
       a.reasons.push('duplicate invoice');
     }
     if (picked.qty && picked.unitPrice && picked.lineTotal) {
-      const qty = Number(String(a.row[picked.qty]).replace(/,/g, ''));
-      const unit = Number(String(a.row[picked.unitPrice]).replace(/,/g, ''));
-      const total = Number(String(a.row[picked.lineTotal]).replace(/,/g, ''));
+      const qty = numberFrom(a.row, picked.qty);
+      const unit = numberFrom(a.row, picked.unitPrice);
+      const total = numberFrom(a.row, picked.lineTotal);
       if (Number.isFinite(qty) && Number.isFinite(unit) && Number.isFinite(total) && Math.abs(qty * unit - total) > Math.max(1, total * 0.02)) {
         a.score += weights.mismatch;
         a.reasons.push('qty*unit mismatch');
@@ -176,8 +182,7 @@ export function aggStoreTod(headers: string[], rows: Row[], mapping: Mapping) {
     const store = safeText(picked.store ? row[picked.store] : '') || 'Unknown';
     const rawDate = safeText(picked.date ? row[picked.date] : '');
     const rawTime = safeText(picked.time ? row[picked.time] : '');
-    const amountRaw = picked.invoiceAmount ? row[picked.invoiceAmount] : (picked.lineTotal ? row[picked.lineTotal] : '');
-    const amount = typeof amountRaw === 'number' ? amountRaw : Number(String(amountRaw).replace(/,/g, ''));
+    const amount = Number.isFinite(numberFrom(row, picked.invoiceAmount)) ? numberFrom(row, picked.invoiceAmount) : numberFrom(row, picked.lineTotal);
     const hour = parseDateParts(rawTime || rawDate).hour;
     const bucket = bucketHour(hour);
     const s = storeMap.get(store) ?? { count: 0, amount: 0, suspicious: 0 };
@@ -203,6 +208,7 @@ export function crossSheetRelations(sheets: { name: string; headers: string[]; r
     for (let j = i + 1; j < sheets.length; j += 1) {
       const left = sheets[i];
       const right = sheets[j];
+      if (!left || !right) continue;
       const leftValues = new Set(left.rows.flatMap((r) => Object.values(r).map((v) => safeText(v))).filter(Boolean));
       const rightValues = new Set(right.rows.flatMap((r) => Object.values(r).map((v) => safeText(v))).filter(Boolean));
       let overlap = 0;
