@@ -1,5 +1,5 @@
-import DoitAppDb from './DoitAppDb';
+import DoitAppLean from './DoitAppLean';
 
 export default function App() {
-  return <DoitAppDb />;
+  return <DoitAppLean />;
 }
