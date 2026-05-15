@@ -84,7 +84,9 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
     const store = safeText(picked.store ? row[picked.store] : '');
     const rawDate = safeText(picked.date ? row[picked.date] : '');
     const rawTime = safeText(picked.time ? row[picked.time] : '');
-    const amount = Number.isFinite(numberFrom(row, picked.invoiceAmount)) ? numberFrom(row, picked.invoiceAmount) : numberFrom(row, picked.lineTotal);
+    const invoiceAmount = numberFrom(row, picked.invoiceAmount);
+    const lineTotal = numberFrom(row, picked.lineTotal);
+    const amount = Number.isFinite(invoiceAmount) ? invoiceAmount : lineTotal;
     const parsedTime = parseDateParts(rawTime || rawDate);
     const hour = parsedTime.hour;
     if (Number.isFinite(amount)) amounts.push(amount);
@@ -115,18 +117,7 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
       score += weights.blank;
       reasons.push('invalid amount');
     }
-    analyses.push({
-      rowIndex: idx,
-      score,
-      reasons,
-      invoiceNo,
-      store,
-      date: parsedTime.date || rawDate,
-      time: parsedTime.time || rawTime,
-      amount: Number.isFinite(amount) ? amount : 0,
-      sheet: sheetName,
-      row,
-    });
+    analyses.push({ rowIndex: idx, score, reasons, invoiceNo, store, date: parsedTime.date || rawDate, time: parsedTime.time || rawTime, amount: Number.isFinite(amount) ? amount : 0, sheet: sheetName, row });
   });
 
   const med = median(amounts);
@@ -142,7 +133,8 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
         a.reasons.push('amount deviation');
       }
     }
-    if (a.invoiceNo && invoiceMap.get(a.invoiceNo)?.count > 1) {
+    const invoiceGroup = a.invoiceNo ? invoiceMap.get(a.invoiceNo) : undefined;
+    if (invoiceGroup && invoiceGroup.count > 1) {
       a.score += weights.duplicate;
       a.reasons.push('duplicate invoice');
     }
@@ -157,12 +149,7 @@ export function buildAnalysis(sheetName: string, headers: string[], rows: Row[],
     }
   });
 
-  return {
-    analyses: analyses.sort((a, b) => b.score - a.score).slice(0, 40),
-    med,
-    spread,
-    totalCount: rows.length,
-  };
+  return { analyses: analyses.sort((a, b) => b.score - a.score).slice(0, 40), med, spread, totalCount: rows.length };
 }
 
 export function aggStoreTod(headers: string[], rows: Row[], mapping: Mapping) {
@@ -182,7 +169,9 @@ export function aggStoreTod(headers: string[], rows: Row[], mapping: Mapping) {
     const store = safeText(picked.store ? row[picked.store] : '') || 'Unknown';
     const rawDate = safeText(picked.date ? row[picked.date] : '');
     const rawTime = safeText(picked.time ? row[picked.time] : '');
-    const amount = Number.isFinite(numberFrom(row, picked.invoiceAmount)) ? numberFrom(row, picked.invoiceAmount) : numberFrom(row, picked.lineTotal);
+    const invoiceAmount = numberFrom(row, picked.invoiceAmount);
+    const lineTotal = numberFrom(row, picked.lineTotal);
+    const amount = Number.isFinite(invoiceAmount) ? invoiceAmount : lineTotal;
     const hour = parseDateParts(rawTime || rawDate).hour;
     const bucket = bucketHour(hour);
     const s = storeMap.get(store) ?? { count: 0, amount: 0, suspicious: 0 };
@@ -212,9 +201,7 @@ export function crossSheetRelations(sheets: { name: string; headers: string[]; r
       const leftValues = new Set(left.rows.flatMap((r) => Object.values(r).map((v) => safeText(v))).filter(Boolean));
       const rightValues = new Set(right.rows.flatMap((r) => Object.values(r).map((v) => safeText(v))).filter(Boolean));
       let overlap = 0;
-      leftValues.forEach((v) => {
-        if (rightValues.has(v)) overlap += 1;
-      });
+      leftValues.forEach((v) => { if (rightValues.has(v)) overlap += 1; });
       if (overlap > 0) relations.push({ leftSheet: left.name, rightSheet: right.name, key: 'shared values', overlap, leftOnly: leftValues.size, rightOnly: rightValues.size });
     }
   }
