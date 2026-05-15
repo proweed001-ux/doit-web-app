@@ -38,6 +38,10 @@ type MappingKey = CanonicalField;
 const AUTH_KEY = 'doit.auth.thai.v1';
 const DB_KEY = 'doit.db.thai.v1';
 const SETTINGS_KEY = 'doit.settings.thai.v1';
+const MAX_FILE_SIZE_MB = 25;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_DB_SIZE_MB = 10;
+const MAX_DB_SIZE_BYTES = MAX_DB_SIZE_MB * 1024 * 1024;
 
 const fieldLabels: Record<MappingKey, string> = {
   invoiceNo: 'เลขที่บิล / เลขเอกสาร',
@@ -57,10 +61,10 @@ const fieldLabels: Record<MappingKey, string> = {
 const viewLabels: Record<View, string> = {
   dashboard: 'หน้าหลัก',
   sheets: 'ดูตาราง',
-  relations: 'เทียบข้อมูล',
-  tod: 'ร้าน/ช่วงเวลา',
+  relations: 'หาข้อมูลซ้ำ',
+  tod: 'สรุปร้าน/เวลา',
   reports: 'รายงาน',
-  database: 'ฐานข้อมูล',
+  database: 'เก็บข้อมูล',
   settings: 'ตั้งค่า',
 };
 
@@ -79,6 +83,14 @@ function saveJson(key: string, value: unknown) {
   if (typeof window !== 'undefined') window.localStorage.setItem(key, JSON.stringify(value));
 }
 
+function makeToken(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function fileSizeMb(file: File): string {
+  return (file.size / 1024 / 1024).toFixed(1);
+}
+
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '0';
   return Number.isInteger(value) ? value.toLocaleString('th-TH') : value.toLocaleString('th-TH', { maximumFractionDigits: 2 });
@@ -91,9 +103,9 @@ function thaiReason(reason: string): string {
     'missing store': 'ไม่พบชื่อร้าน',
     'missing date': 'ไม่พบวันที่',
     'blank invoice': 'เลขที่บิลว่าง',
-    'odd hour': 'เวลาผิดปกติ',
+    'odd hour': 'เวลาแปลกกว่าปกติ',
     'invalid amount': 'ยอดเงินไม่ถูกต้อง',
-    'amount outlier': 'ยอดเงินสูง/ต่ำผิดปกติมาก',
+    'amount outlier': 'ยอดเงินสูงหรือต่ำผิดปกติมาก',
     'amount deviation': 'ยอดเงินต่างจากปกติ',
     'duplicate invoice': 'เลขที่บิลซ้ำ',
     'qty*unit mismatch': 'จำนวนคูณราคาไม่ตรงกับยอดรวม',
@@ -120,13 +132,17 @@ function buildThaiReport(workbook: Workbook): string {
   lines.push(`เวลาที่ตรวจ: ${new Date(workbook.parsedAt).toLocaleString('th-TH')}`);
   lines.push(`จำนวนชีต: ${formatNumber(workbook.sheets.length)}`);
   lines.push(`จำนวนแถวทั้งหมด: ${formatNumber(workbook.rowCount)}`);
-  lines.push(`รายการที่ควรตรวจเพิ่ม: ${formatNumber(workbook.anomalyCount)}`);
+  lines.push(`รายการที่ควรเปิดดูเพิ่ม: ${formatNumber(workbook.anomalyCount)}`);
+  lines.push('');
+  lines.push('คำอธิบาย: รายการที่ระบบชี้ให้ดูเพิ่ม ไม่ได้แปลว่าผิดเสมอไป แต่เป็นรายการที่ควรตรวจให้แน่ใจ');
   lines.push('');
   lines.push('## สรุปแต่ละชีต');
-  workbook.sheets.forEach((sheet) => lines.push(`- ${sheet.name}: ${formatNumber(sheet.rows.length)} แถว, พบจุดน่าสงสัย ${formatNumber(sheet.anomalies.length)} รายการ`));
+  workbook.sheets.forEach((sheet) => lines.push(`- ${sheet.name}: ${formatNumber(sheet.rows.length)} แถว, พบจุดที่ควรตรวจ ${formatNumber(sheet.anomalies.length)} รายการ`));
   lines.push('');
   lines.push('## รายการที่ควรตรวจเป็นพิเศษ');
-  workbook.sheets.flatMap((sheet) => sheet.anomalies.slice(0, 5)).forEach((item) => {
+  const topItems = workbook.sheets.flatMap((sheet) => sheet.anomalies.slice(0, 5));
+  if (!topItems.length) lines.push('- ยังไม่พบรายการน่าสงสัย');
+  topItems.forEach((item) => {
     const reasons = item.reasons.map(thaiReason).join(', ') || 'ไม่มีหมายเหตุ';
     lines.push(`- ${item.sheet} :: ${item.invoiceNo || `แถวที่ ${item.rowIndex + 1}`} :: คะแนน ${item.score} :: ${reasons}`);
   });
@@ -274,7 +290,7 @@ export default function DoitAppThai() {
   function login() {
     const name = (document.getElementById('name') as HTMLInputElement | null)?.value ?? '';
     const org = (document.getElementById('org') as HTMLInputElement | null)?.value ?? '';
-    const next: Session = { name: safeText(name) || 'ผู้ใช้งาน', org: safeText(org) || 'ทีมงาน', token: crypto.randomUUID(), createdAt: new Date().toISOString() };
+    const next: Session = { name: safeText(name) || 'ผู้ใช้งาน', org: safeText(org) || 'ทีมงาน', token: makeToken(), createdAt: new Date().toISOString() };
     setSession(next);
     setDB((prev) => ({ ...prev, sessions: [next, ...prev.sessions].slice(0, 20) }));
     setStatus(`เข้าใช้งานแล้ว: ${next.name}`);
@@ -297,6 +313,11 @@ export default function DoitAppThai() {
 
   async function handleLoadFile(file: File) {
     if (!session) { setError('กรุณากดเข้าใช้งานก่อน'); return; }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setError(`ไฟล์นี้ใหญ่ ${fileSizeMb(file)} MB เกินขนาดที่แนะนำ ${MAX_FILE_SIZE_MB} MB กรุณาแบ่งไฟล์หรือใช้ไฟล์ที่เล็กลงก่อน`);
+      setStatus('ไฟล์ใหญ่เกินไป');
+      return;
+    }
     setError('');
     setStatus(`กำลังอ่านไฟล์ ${file.name}`);
     try {
@@ -304,7 +325,7 @@ export default function DoitAppThai() {
       persistWorkbook(wb);
       setActiveSheet(0);
       setView('dashboard');
-      setStatus(`อ่านไฟล์สำเร็จ: พบ ${formatNumber(wb.sheets.length)} ชีต`);
+      setStatus(`อ่านไฟล์สำเร็จ: พบ ${formatNumber(wb.sheets.length)} ชีต รวม ${formatNumber(wb.rowCount)} แถว`);
     } catch (e) {
       setWorkbook(null);
       setError((e as Error).message || 'อ่านไฟล์ไม่สำเร็จ กรุณาตรวจไฟล์อีกครั้ง');
@@ -314,6 +335,10 @@ export default function DoitAppThai() {
 
   async function handleImportDatabase(file: File) {
     if (!session) { setError('กรุณากดเข้าใช้งานก่อน'); return; }
+    if (file.size > MAX_DB_SIZE_BYTES) {
+      setError(`ไฟล์ฐานข้อมูลใหญ่ ${fileSizeMb(file)} MB เกิน ${MAX_DB_SIZE_MB} MB`);
+      return;
+    }
     try {
       setDB(parseDatabaseFile(await file.text()));
       setStatus('นำเข้าฐานข้อมูลสำเร็จ');
@@ -325,7 +350,7 @@ export default function DoitAppThai() {
   function handleExportDatabase() { downloadText('ฐานข้อมูล-doit.json', exportDatabase(db), 'application/json;charset=utf-8'); }
   function exportReport() { if (workbook) downloadText(`${workbook.sourceName.replace(/\.[^.]+$/, '')}-รายงาน.md`, workbook.reportMarkdown, 'text/markdown;charset=utf-8'); }
   function exportJson() { if (workbook) downloadJson(`${workbook.sourceName.replace(/\.[^.]+$/, '')}-ข้อมูล.json`, workbook); }
-  function saveTemplate() { if (!active) return; setDB((prev) => ({ ...prev, templates: { ...prev.templates, [active.name]: active.mapping } })); setStatus(`บันทึกการจับคู่หัวตารางของ ${active.name} แล้ว`); }
+  function saveTemplate() { if (!active) return; setDB((prev) => ({ ...prev, templates: { ...prev.templates, [active.name]: active.mapping } })); setStatus(`บันทึกการจำหัวตารางของ ${active.name} แล้ว`); }
 
   function updateMapping(field: MappingKey, header: string) {
     if (!active || !workbook) return;
@@ -335,8 +360,8 @@ export default function DoitAppThai() {
     setDB((prev) => ({ ...prev, templates: { ...prev.templates, [active.name]: { ...active.mapping, [field]: header || undefined } } }));
   }
 
-  const buttonStyle = (id: View) => ({ padding: '12px 16px', borderRadius: 999, border: `1px solid ${view === id ? t.accent : t.border}`, background: view === id ? `${t.accent}22` : t.panel, color: t.text, fontWeight: 800 as const, cursor: 'pointer', fontSize: 16 });
-  const shell = { minHeight: '100vh', background: t.shell, color: t.text, fontFamily: 'Tahoma, Noto Sans Thai, system-ui, sans-serif', fontSize: 16 } as const;
+  const buttonStyle = (id: View) => ({ padding: '14px 18px', minHeight: 54, borderRadius: 999, border: `1px solid ${view === id ? t.accent : t.border}`, background: view === id ? `${t.accent}22` : t.panel, color: t.text, fontWeight: 900 as const, cursor: 'pointer', fontSize: 18 });
+  const shell = { minHeight: '100vh', background: t.shell, color: t.text, fontFamily: 'Tahoma, Noto Sans Thai, system-ui, sans-serif', fontSize: 18 } as const;
   const panel = { background: t.panel, border: `1px solid ${t.border}`, borderRadius: 20, boxShadow: dark ? '0 20px 60px rgba(0,0,0,0.18)' : '0 18px 48px rgba(15,23,42,0.06)' } as const;
   const card = { background: t.card, border: `1px solid ${t.border}`, borderRadius: 16 } as const;
 
@@ -344,48 +369,59 @@ export default function DoitAppThai() {
     <div style={shell}>
       <div style={{ maxWidth: 1480, margin: '0 auto', padding: 20 }}>
         {!session ? (
-          <div style={{ ...panel, maxWidth: 720, margin: '48px auto', padding: 24 }}>
-            <h1 style={{ margin: 0, fontSize: 'clamp(2rem, 4vw, 3rem)' }}>ระบบตรวจข้อมูล DOIT</h1>
-            <p style={{ color: t.muted, fontSize: 18, lineHeight: 1.6 }}>กดเข้าใช้งานก่อน แล้วค่อยเลือกไฟล์ Excel เพื่อให้ระบบช่วยสรุปยอด ตรวจข้อมูลซ้ำ และชี้จุดที่ควรดูเพิ่ม</p>
-            <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-              <input id="name" placeholder="ชื่อผู้ใช้ เช่น พี่ฐา" style={{ padding: 14, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 18 }} />
-              <input id="org" placeholder="ชื่อทีม/หน่วยงาน เช่น ฝ่ายขาย" style={{ padding: 14, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 18 }} />
-              <button onClick={login} style={{ padding: 14, borderRadius: 12, border: 'none', background: t.accent, color: '#082f49', fontWeight: 900, cursor: 'pointer', fontSize: 18 }}>เข้าใช้งาน</button>
+          <div style={{ ...panel, maxWidth: 760, margin: '48px auto', padding: 28 }}>
+            <h1 style={{ margin: 0, fontSize: 'clamp(2.1rem, 4vw, 3.2rem)' }}>ระบบตรวจข้อมูล DOIT</h1>
+            <p style={{ color: t.muted, fontSize: 20, lineHeight: 1.7 }}>ใช้สำหรับเปิดไฟล์ Excel แล้วให้ระบบช่วยสรุปยอด หาบิลซ้ำ และบอกว่ารายการไหนควรเปิดดูเพิ่ม</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 18 }}>
+              {['1. กรอกชื่อ', '2. กดเข้าใช้งาน', '3. เลือกไฟล์ Excel'].map((step) => <div key={step} style={{ ...card, padding: 16, fontWeight: 900 }}>{step}</div>)}
+            </div>
+            <div style={{ display: 'grid', gap: 14, marginTop: 18 }}>
+              <input id="name" placeholder="ชื่อผู้ใช้ เช่น พี่ฐา" style={{ padding: 16, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 20 }} />
+              <input id="org" placeholder="ชื่อทีม/หน่วยงาน เช่น ฝ่ายขาย" style={{ padding: 16, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 20 }} />
+              <button onClick={login} style={{ padding: 18, borderRadius: 14, border: 'none', background: t.accent, color: '#082f49', fontWeight: 900, cursor: 'pointer', fontSize: 22 }}>เข้าใช้งาน</button>
             </div>
           </div>
         ) : (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div>
-                <div style={{ fontSize: 14, color: t.muted, letterSpacing: 0.4 }}>ระบบ DOIT</div>
-                <h1 style={{ margin: '8px 0 6px', fontSize: 'clamp(2rem, 3vw, 3.4rem)', lineHeight: 1.05 }}>หน้าควบคุมข้อมูล</h1>
-                <div style={{ color: t.muted, fontSize: 17 }}>ผู้ใช้: <strong>{session.name}</strong> · ทีม: {session.org}</div>
+                <div style={{ fontSize: 15, color: t.muted, letterSpacing: 0.4 }}>ระบบ DOIT</div>
+                <h1 style={{ margin: '8px 0 6px', fontSize: 'clamp(2.2rem, 3vw, 3.5rem)', lineHeight: 1.05 }}>หน้าควบคุมข้อมูล</h1>
+                <div style={{ color: t.muted, fontSize: 18 }}>ผู้ใช้: <strong>{session.name}</strong> · ทีม: {session.org}</div>
               </div>
-              <div style={{ ...panel, minWidth: 280, padding: 16 }}>
-                <div style={{ fontSize: 13, color: t.muted }}>สถานะ</div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>{status}</div>
-                {workbook && <div style={{ marginTop: 6, fontSize: 13, color: t.muted }}>{workbook.sourceName} · {new Date(workbook.parsedAt).toLocaleString('th-TH')}</div>}
+              <div style={{ ...panel, minWidth: 300, padding: 18 }}>
+                <div style={{ fontSize: 14, color: t.muted }}>สถานะล่าสุด</div>
+                <div style={{ fontWeight: 900, fontSize: 20 }}>{status}</div>
+                {workbook && <div style={{ marginTop: 6, fontSize: 14, color: t.muted }}>{workbook.sourceName} · {new Date(workbook.parsedAt).toLocaleString('th-TH')}</div>}
               </div>
             </div>
 
-            <div style={{ marginTop: 18, ...panel, padding: 18 }}>
+            <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+              {[
+                ['ขั้นที่ 1', 'เลือกไฟล์ Excel'],
+                ['ขั้นที่ 2', 'ระบบสรุปให้ดู'],
+                ['ขั้นที่ 3', 'เปิดรายการที่ควรตรวจ'],
+              ].map(([head, body]) => <div key={head} style={{ ...card, padding: 16 }}><div style={{ color: t.muted, fontSize: 14 }}>{head}</div><div style={{ fontSize: 20, fontWeight: 900 }}>{body}</div></div>)}
+            </div>
+
+            <div style={{ marginTop: 18, ...panel, padding: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                 <div>
-                  <div style={{ fontWeight: 900, fontSize: 20 }}>เลือกไฟล์ข้อมูล</div>
-                  <div style={{ color: t.muted, fontSize: 17 }}>รองรับไฟล์ Excel, CSV และไฟล์ฐานข้อมูลที่เคยบันทึกไว้</div>
+                  <div style={{ fontWeight: 900, fontSize: 22 }}>เลือกไฟล์ข้อมูล</div>
+                  <div style={{ color: t.muted, fontSize: 18, lineHeight: 1.5 }}>เลือกไฟล์ Excel หรือ CSV ขนาดไม่เกิน {MAX_FILE_SIZE_MB} MB ถ้าไฟล์ใหญ่มากให้แบ่งไฟล์ก่อน</div>
                 </div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <label style={{ cursor: 'pointer', padding: '14px 18px', borderRadius: 14, background: t.accent, color: '#082f49', fontWeight: 900, fontSize: 18 }}>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <label style={{ cursor: 'pointer', padding: '18px 22px', borderRadius: 16, background: t.accent, color: '#082f49', fontWeight: 900, fontSize: 20 }}>
                     เลือกไฟล์ Excel
                     <input type="file" accept=".xlsx,.xlsm,.zip,.csv,.txt" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleLoadFile(f); }} />
                   </label>
-                  <label style={{ cursor: 'pointer', padding: '14px 18px', borderRadius: 14, background: t.panel, color: t.text, border: `1px solid ${t.border}`, fontWeight: 900, fontSize: 18 }}>
-                    นำเข้าฐานข้อมูล
+                  <label style={{ cursor: 'pointer', padding: '18px 22px', borderRadius: 16, background: t.panel, color: t.text, border: `1px solid ${t.border}`, fontWeight: 900, fontSize: 20 }}>
+                    นำเข้าข้อมูลเดิม
                     <input type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportDatabase(f); }} />
                   </label>
                 </div>
               </div>
-              {error && <div style={{ marginTop: 12, padding: 14, borderRadius: 12, background: `${t.danger}18`, color: t.danger, fontWeight: 800 }}>{error}</div>}
+              {error && <div style={{ marginTop: 14, padding: 16, borderRadius: 12, background: `${t.danger}18`, color: t.danger, fontWeight: 900, fontSize: 18, lineHeight: 1.5 }}>{error}</div>}
             </div>
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 16 }}>
@@ -395,23 +431,27 @@ export default function DoitAppThai() {
               <button style={buttonStyle('database')} onClick={logout}>ออกจากระบบ</button>
             </div>
 
-            {!workbook && <div style={{ ...panel, marginTop: 22, padding: 24, color: t.muted, fontSize: 20 }}>ยังไม่มีไฟล์ข้อมูล ให้กดปุ่ม “เลือกไฟล์ Excel” ด้านบนก่อน</div>}
+            {!workbook && <div style={{ ...panel, marginTop: 22, padding: 28, color: t.muted, fontSize: 22, lineHeight: 1.6 }}>ยังไม่มีไฟล์ข้อมูล ให้กดปุ่ม “เลือกไฟล์ Excel” ด้านบนก่อน ระบบจะอ่านไฟล์แล้วพาไปหน้าสรุปให้อัตโนมัติ</div>}
 
             {workbook && view === 'dashboard' && (
               <div style={{ marginTop: 22, display: 'grid', gap: 18 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
+                <div style={{ ...panel, padding: 18 }}>
+                  <div style={{ fontWeight: 900, fontSize: 22 }}>ควรทำอะไรต่อ</div>
+                  <div style={{ color: t.muted, marginTop: 6, lineHeight: 1.6 }}>ดูช่อง “ควรตรวจเพิ่ม” ก่อน ถ้าตัวเลขมาก ให้กดเมนู “ดูตาราง” หรือ “รายงาน” เพื่อเปิดดูรายละเอียด</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 16 }}>
                   {[
                     { label: 'จำนวนชีต', value: workbook.sheets.length },
                     { label: 'จำนวนแถว', value: workbook.rowCount },
                     { label: 'ควรตรวจเพิ่ม', value: workbook.anomalyCount },
-                    { label: 'ข้อมูลเชื่อมกัน', value: workbook.relations.length },
-                  ].map((item) => <div key={item.label} style={{ ...card, padding: 18 }}><div style={{ color: t.muted, fontSize: 15 }}>{item.label}</div><div style={{ fontSize: 34, fontWeight: 900, marginTop: 4 }}>{formatNumber(item.value)}</div></div>)}
+                    { label: 'ข้อมูลซ้ำ/เกี่ยวข้อง', value: workbook.relations.length },
+                  ].map((item) => <div key={item.label} style={{ ...card, padding: 20 }}><div style={{ color: t.muted, fontSize: 16 }}>{item.label}</div><div style={{ fontSize: 38, fontWeight: 900, marginTop: 4 }}>{formatNumber(item.value)}</div></div>)}
                 </div>
-                <div style={{ ...panel, padding: 18 }}>
-                  <div style={{ fontWeight: 900, fontSize: 20 }}>รายการที่ควรตรวจเป็นพิเศษ</div>
-                  <div style={{ color: t.muted, marginTop: 4 }}>คะแนนสูงแปลว่าควรเปิดดู แต่ไม่ได้แปลว่าผิดเสมอไป</div>
+                <div style={{ ...panel, padding: 20 }}>
+                  <div style={{ fontWeight: 900, fontSize: 22 }}>รายการที่ควรตรวจเป็นพิเศษ</div>
+                  <div style={{ color: t.muted, marginTop: 6, lineHeight: 1.6 }}>คะแนนสูงแปลว่าควรเปิดดู แต่ไม่ได้แปลว่าผิดเสมอไป</div>
                   <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
-                    {workbookSnapshots.anomalies.slice(0, 12).map((item) => <div key={`${item.sheet}-${item.rowIndex}`} style={{ padding: 14, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><strong>{item.sheet} · {item.invoiceNo || `แถวที่ ${item.rowIndex + 1}`}</strong><span style={{ color: t.danger, fontWeight: 900 }}>คะแนน {item.score}</span></div><div style={{ color: t.muted, marginTop: 6 }}>{item.reasons.map(thaiReason).join(' · ') || 'ปกติ'}</div></div>)}
+                    {workbookSnapshots.anomalies.slice(0, 12).map((item) => <div key={`${item.sheet}-${item.rowIndex}`} style={{ padding: 16, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><strong>{item.sheet} · {item.invoiceNo || `แถวที่ ${item.rowIndex + 1}`}</strong><span style={{ color: t.danger, fontWeight: 900 }}>คะแนน {item.score}</span></div><div style={{ color: t.muted, marginTop: 6 }}>{item.reasons.map(thaiReason).join(' · ') || 'ปกติ'}</div></div>)}
                     {!workbookSnapshots.anomalies.length && <div style={{ color: t.muted }}>ยังไม่พบรายการน่าสงสัย</div>}
                   </div>
                 </div>
@@ -423,32 +463,32 @@ export default function DoitAppThai() {
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{workbook.sheets.map((sheet, idx) => <button key={sheet.name + idx} onClick={() => setActiveSheet(idx)} style={{ ...buttonStyle('sheets'), background: idx === activeSheet ? `${t.accent}22` : t.panel }}>{sheet.name}</button>)}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(280px, 0.9fr)', gap: 18 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ ...panel, padding: 18 }}>
+                    <div style={{ ...panel, padding: 20 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                        <div><div style={{ fontSize: 14, color: t.muted }}>ตารางที่กำลังดู</div><div style={{ fontSize: 22, fontWeight: 900 }}>{active.name}</div></div>
+                        <div><div style={{ fontSize: 15, color: t.muted }}>ตารางที่กำลังดู</div><div style={{ fontSize: 24, fontWeight: 900 }}>{active.name}</div></div>
                         <div style={{ color: t.muted }}>{formatNumber(active.rows.length)} แถว · {formatNumber(active.headers.length)} คอลัมน์ · {summarizeHeaders(active.headers)}</div>
                       </div>
                       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-                        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ค้นหาชื่อร้าน เลขบิล หรือสินค้า..." style={{ flex: '1 1 220px', padding: 14, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 18 }} />
+                        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ค้นหาชื่อร้าน เลขบิล หรือสินค้า..." style={{ flex: '1 1 220px', padding: 16, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 20 }} />
                         <button onClick={saveTemplate} style={buttonStyle('sheets')}>จำหัวตารางนี้</button>
                       </div>
                     </div>
                     <div style={{ marginTop: 16, overflowX: 'auto', borderRadius: 18, border: `1px solid ${t.border}`, background: t.panel }}>
                       <table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}>
-                        <thead><tr>{active.headers.map((h) => <th key={h} style={{ position: 'sticky', top: 0, background: t.panel, textAlign: 'left', padding: 12, borderBottom: `1px solid ${t.border}`, color: t.muted }}>{h}</th>)}</tr></thead>
-                        <tbody>{visibleRows.map((row, i) => <tr key={i} style={{ background: i % 2 ? t.tableAlt : 'transparent' }}>{active.headers.map((h) => <td key={h} style={{ padding: 12, borderBottom: `1px solid ${t.border}` }}>{safeText(row[h]) || '—'}</td>)}</tr>)}</tbody>
+                        <thead><tr>{active.headers.map((h) => <th key={h} style={{ position: 'sticky', top: 0, background: t.panel, textAlign: 'left', padding: 14, borderBottom: `1px solid ${t.border}`, color: t.muted, fontSize: 16 }}>{h}</th>)}</tr></thead>
+                        <tbody>{visibleRows.map((row, i) => <tr key={i} style={{ background: i % 2 ? t.tableAlt : 'transparent' }}>{active.headers.map((h) => <td key={h} style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 17 }}>{safeText(row[h]) || '—'}</td>)}</tr>)}</tbody>
                       </table>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gap: 18 }}>
-                    <div style={{ ...panel, padding: 18 }}>
-                      <div style={{ fontWeight: 900, fontSize: 20 }}>จับคู่หัวตาราง</div>
-                      <div style={{ color: t.muted, marginTop: 4 }}>เลือกว่าคอลัมน์ไหนคืออะไร ถ้าระบบจับผิดให้แก้ตรงนี้</div>
-                      <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                    <div style={{ ...panel, padding: 20 }}>
+                      <div style={{ fontWeight: 900, fontSize: 22 }}>จำว่าหัวตารางคืออะไร</div>
+                      <div style={{ color: t.muted, marginTop: 6, lineHeight: 1.5 }}>ถ้าระบบอ่านชื่อคอลัมน์ผิด ให้เลือกใหม่ตรงนี้ แล้วกด “จำหัวตารางนี้”</div>
+                      <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
                         {(Object.keys(makeTemplate(active.headers)) as MappingKey[]).map((field) => (
                           <label key={field} style={{ display: 'grid', gap: 6 }}>
-                            <span style={{ color: t.muted, fontSize: 14 }}>{fieldLabels[field]}</span>
-                            <select value={active.mapping[field] ?? ''} onChange={(e) => updateMapping(field, e.target.value)} style={{ padding: 12, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 16 }}>
+                            <span style={{ color: t.muted, fontSize: 15 }}>{fieldLabels[field]}</span>
+                            <select value={active.mapping[field] ?? ''} onChange={(e) => updateMapping(field, e.target.value)} style={{ padding: 14, borderRadius: 12, border: `1px solid ${t.border}`, background: t.card, color: t.text, fontSize: 17 }}>
                               <option value="">ไม่เลือก</option>
                               {active.headers.map((h) => <option key={h} value={h}>{h}</option>)}
                             </select>
@@ -456,33 +496,33 @@ export default function DoitAppThai() {
                         ))}
                       </div>
                     </div>
-                    <div style={{ ...panel, padding: 18 }}>
-                      <div style={{ fontWeight: 900, fontSize: 20 }}>สรุปตารางนี้</div>
-                      <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                    <div style={{ ...panel, padding: 20 }}>
+                      <div style={{ fontWeight: 900, fontSize: 22 }}>สรุปตารางนี้</div>
+                      <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>จำนวนแถว</span><strong>{formatNumber(active.rows.length)}</strong></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ควรตรวจเพิ่ม</span><strong>{formatNumber(active.anomalies.length)}</strong></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ร้านที่สรุปได้</span><strong>{formatNumber(active.storeSummary.length)}</strong></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ช่วงเวลาที่พบ</span><strong>{formatNumber(active.todSummary.length)}</strong></div>
                       </div>
                     </div>
-                    <div style={{ ...panel, padding: 18 }}>
-                      <div style={{ fontWeight: 900, fontSize: 20 }}>คอลัมน์ตัวเลขสำคัญ</div>
-                      <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>{active.numericSummary.slice(0, 8).map((n) => <div key={n.name} style={{ padding: 12, borderRadius: 12, background: t.card, border: `1px solid ${t.border}` }}><div style={{ color: t.muted, fontSize: 14 }}>{n.name}</div><strong>{formatNumber(n.total)}</strong><div style={{ color: t.muted, fontSize: 13 }}>เจอข้อมูลตัวเลข {formatNumber(n.count)} ช่อง</div></div>)}</div>
+                    <div style={{ ...panel, padding: 20 }}>
+                      <div style={{ fontWeight: 900, fontSize: 22 }}>ยอดตัวเลขสำคัญ</div>
+                      <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>{active.numericSummary.slice(0, 8).map((n) => <div key={n.name} style={{ padding: 14, borderRadius: 12, background: t.card, border: `1px solid ${t.border}` }}><div style={{ color: t.muted, fontSize: 15 }}>{n.name}</div><strong>{formatNumber(n.total)}</strong><div style={{ color: t.muted, fontSize: 14 }}>เจอข้อมูลตัวเลข {formatNumber(n.count)} ช่อง</div></div>)}</div>
                     </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {workbook && view === 'relations' && <div style={{ marginTop: 22, ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>เทียบข้อมูลข้ามตาราง</div><div style={{ color: t.muted, marginTop: 4 }}>ใช้ดูว่าชีตไหนมีข้อมูลซ้ำหรือเกี่ยวข้องกัน</div><div style={{ marginTop: 12, display: 'grid', gap: 10 }}>{workbookSnapshots.relations.length ? workbookSnapshots.relations.map((relation, idx) => <div key={idx} style={{ padding: 14, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><strong>{relation.leftSheet} เทียบกับ {relation.rightSheet}</strong><div style={{ color: t.muted, fontSize: 14 }}>พบข้อมูลตรงกัน {formatNumber(relation.overlap)} จุด</div></div>) : <div style={{ color: t.muted }}>ยังไม่พบข้อมูลที่เชื่อมกันชัดเจน</div>}</div></div>}
+            {workbook && view === 'relations' && <div style={{ marginTop: 22, ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>หาข้อมูลซ้ำหรือเกี่ยวข้องกัน</div><div style={{ color: t.muted, marginTop: 6, lineHeight: 1.5 }}>ใช้ดูว่าชีตไหนมีข้อมูลซ้ำหรือเกี่ยวข้องกัน เช่น เลขบิล ชื่อร้าน หรือยอดเงินที่เจอเหมือนกัน</div><div style={{ marginTop: 12, display: 'grid', gap: 10 }}>{workbookSnapshots.relations.length ? workbookSnapshots.relations.map((relation, idx) => <div key={idx} style={{ padding: 16, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><strong>{relation.leftSheet} เทียบกับ {relation.rightSheet}</strong><div style={{ color: t.muted, fontSize: 15 }}>พบข้อมูลตรงกัน {formatNumber(relation.overlap)} จุด</div></div>) : <div style={{ color: t.muted }}>ยังไม่พบข้อมูลที่เชื่อมกันชัดเจน</div>}</div></div>}
 
-            {workbook && view === 'tod' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>สรุปตามร้าน</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 12 }}>{workbookSnapshots.stores.slice(0, 8).map((store, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 900 }}>{store.store}</div><div style={{ color: t.muted, fontSize: 13 }}>{store.sheet}</div><div style={{ marginTop: 8 }}>จำนวนรายการ {formatNumber(store.count)}</div><div>ยอดเงิน {formatNumber(store.amount)}</div><div style={{ color: t.danger }}>ควรตรวจ {formatNumber(store.suspicious)}</div></div>)}</div></div><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>สรุปตามช่วงเวลา</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>{workbookSnapshots.tod.map((item, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 900 }}>{thaiBucket(item.bucket)}</div><div style={{ color: t.muted, fontSize: 13 }}>{item.sheet}</div><div>จำนวนรายการ {formatNumber(item.count)}</div><div>ยอดเงิน {formatNumber(item.amount)}</div></div>)}</div></div></div>}
+            {workbook && view === 'tod' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>สรุปตามร้าน</div><div style={{ color: t.muted, marginTop: 6 }}>ใช้ดูว่าร้านไหนมียอดหรือรายการมาก</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 12 }}>{workbookSnapshots.stores.slice(0, 8).map((store, idx) => <div key={idx} style={{ ...card, padding: 16 }}><div style={{ fontWeight: 900 }}>{store.store}</div><div style={{ color: t.muted, fontSize: 14 }}>{store.sheet}</div><div style={{ marginTop: 8 }}>จำนวนรายการ {formatNumber(store.count)}</div><div>ยอดเงิน {formatNumber(store.amount)}</div><div style={{ color: t.danger }}>ควรตรวจ {formatNumber(store.suspicious)}</div></div>)}</div></div><div style={{ ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>สรุปตามช่วงเวลา</div><div style={{ color: t.muted, marginTop: 6 }}>ใช้ดูว่าข้อมูลเกิดช่วงเวลาไหนมาก</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>{workbookSnapshots.tod.map((item, idx) => <div key={idx} style={{ ...card, padding: 16 }}><div style={{ fontWeight: 900 }}>{thaiBucket(item.bucket)}</div><div style={{ color: t.muted, fontSize: 14 }}>{item.sheet}</div><div>จำนวนรายการ {formatNumber(item.count)}</div><div>ยอดเงิน {formatNumber(item.amount)}</div></div>)}</div></div></div>}
 
-            {workbook && view === 'reports' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><div style={{ fontWeight: 900, fontSize: 20 }}>รายงานสรุป</div><div style={{ color: t.muted, marginTop: 4 }}>อ่านง่าย ใช้ส่งต่อหรือเก็บไว้ตรวจย้อนหลังได้</div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}><button onClick={exportReport} style={buttonStyle('reports')}>โหลดรายงาน</button><button onClick={exportJson} style={buttonStyle('reports')}>โหลดข้อมูล</button></div></div><pre style={{ whiteSpace: 'pre-wrap', marginTop: 16, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}`, overflowX: 'auto', lineHeight: 1.6, fontFamily: 'Tahoma, Noto Sans Thai, system-ui, sans-serif' }}>{workbookSnapshots.report}</pre></div></div>}
+            {workbook && view === 'reports' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><div style={{ fontWeight: 900, fontSize: 22 }}>รายงานสรุป</div><div style={{ color: t.muted, marginTop: 6 }}>อ่านง่าย ใช้ส่งต่อหรือเก็บไว้ตรวจย้อนหลังได้</div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}><button onClick={exportReport} style={buttonStyle('reports')}>โหลดรายงาน</button><button onClick={exportJson} style={buttonStyle('reports')}>โหลดข้อมูล</button></div></div><pre style={{ whiteSpace: 'pre-wrap', marginTop: 16, padding: 18, borderRadius: 14, background: t.card, border: `1px solid ${t.border}`, overflowX: 'auto', lineHeight: 1.7, fontFamily: 'Tahoma, Noto Sans Thai, system-ui, sans-serif', fontSize: 18 }}>{workbookSnapshots.report}</pre></div></div>}
 
-            {view === 'database' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>ฐานข้อมูลในเครื่องนี้</div><div style={{ color: t.muted, marginTop: 4 }}>ข้อมูลถูกเก็บไว้ในเครื่อง/เบราว์เซอร์นี้ ถ้าเปลี่ยนเครื่องต้องส่งออกไฟล์ฐานข้อมูลก่อน</div><div style={{ display: 'grid', gap: 10, marginTop: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ผู้ใช้ที่เคยเข้า</span><strong>{formatNumber(db.sessions.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ไฟล์ที่เคยอ่าน</span><strong>{formatNumber(db.workbooks.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>รายงานที่เก็บไว้</span><strong>{formatNumber(db.reports.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>หัวตารางที่จำไว้</span><strong>{formatNumber(Object.keys(db.templates).length)}</strong></div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}><button onClick={handleExportDatabase} style={buttonStyle('database')}>ส่งออกฐานข้อมูล</button><label style={{ cursor: 'pointer', padding: '12px 16px', borderRadius: 12, border: `1px solid ${t.border}`, background: t.panel, color: t.text, fontWeight: 800 }}>นำเข้าฐานข้อมูล<input type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportDatabase(f); }} /></label><button onClick={() => { setDB(DEFAULT_DB); setStatus('ล้างฐานข้อมูลแล้ว'); }} style={buttonStyle('database')}>ล้างฐานข้อมูล</button></div></div><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>ผู้ใช้งาน</div><div style={{ marginTop: 10 }}>ชื่อ: <strong>{session.name}</strong></div><div>ทีม: <strong>{session.org}</strong></div></div></div>}
+            {view === 'database' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>ข้อมูลที่เก็บไว้ในเครื่องนี้</div><div style={{ color: t.muted, marginTop: 6, lineHeight: 1.5 }}>ข้อมูลถูกเก็บไว้ในเครื่องหรือเบราว์เซอร์นี้ ถ้าเปลี่ยนเครื่องให้กด “ส่งออกฐานข้อมูล” ก่อน</div><div style={{ display: 'grid', gap: 10, marginTop: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ผู้ใช้ที่เคยเข้า</span><strong>{formatNumber(db.sessions.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>ไฟล์ที่เคยอ่าน</span><strong>{formatNumber(db.workbooks.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>รายงานที่เก็บไว้</span><strong>{formatNumber(db.reports.length)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>หัวตารางที่จำไว้</span><strong>{formatNumber(Object.keys(db.templates).length)}</strong></div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}><button onClick={handleExportDatabase} style={buttonStyle('database')}>ส่งออกฐานข้อมูล</button><label style={{ cursor: 'pointer', padding: '14px 18px', borderRadius: 12, border: `1px solid ${t.border}`, background: t.panel, color: t.text, fontWeight: 900 }}>นำเข้าข้อมูลเดิม<input type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportDatabase(f); }} /></label><button onClick={() => { setDB(DEFAULT_DB); setStatus('ล้างข้อมูลที่เก็บไว้แล้ว'); }} style={buttonStyle('database')}>ล้างข้อมูล</button></div></div><div style={{ ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>ผู้ใช้งาน</div><div style={{ marginTop: 10 }}>ชื่อ: <strong>{session.name}</strong></div><div>ทีม: <strong>{session.org}</strong></div></div></div>}
 
-            {view === 'settings' && <div style={{ marginTop: 22, ...panel, padding: 18 }}><div style={{ fontWeight: 900, fontSize: 20 }}>ตั้งค่าระบบ</div><div style={{ display: 'grid', gap: 16, marginTop: 14, maxWidth: 760 }}><label style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>โหมดกลางคืน</span><strong>{dark ? 'เปิด' : 'ปิด'}</strong></div><input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} /></label><label style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>จำนวนแถวที่แสดง</span><strong>{formatNumber(rowsLimit)}</strong></div><input type="range" min={25} max={500} step={25} value={rowsLimit} onChange={(e) => setRowsLimit(Number(e.target.value))} /></label><label style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>ระดับการตรวจ</span><strong>{profile === 'balanced' ? 'ปกติ' : profile === 'strict' ? 'เข้มงวด' : 'ละเอียดมาก'}</strong></div><select value={profile} onChange={(e) => setProfile(e.target.value as Profile)} style={{ padding: 12, borderRadius: 12, border: `1px solid ${t.border}`, background: t.panel, color: t.text }}><option value="balanced">ปกติ</option><option value="strict">เข้มงวด</option><option value="forensic">ละเอียดมาก</option></select></label></div></div>}
+            {view === 'settings' && <div style={{ marginTop: 22, ...panel, padding: 20 }}><div style={{ fontWeight: 900, fontSize: 22 }}>ตั้งค่าระบบ</div><div style={{ color: t.muted, marginTop: 6 }}>ปรับให้อ่านง่ายตามคนใช้งาน</div><div style={{ display: 'grid', gap: 16, marginTop: 14, maxWidth: 760 }}><label style={{ display: 'grid', gap: 8, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>โหมดกลางคืน</span><strong>{dark ? 'เปิด' : 'ปิด'}</strong></div><input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} /></label><label style={{ display: 'grid', gap: 8, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>จำนวนแถวที่แสดง</span><strong>{formatNumber(rowsLimit)}</strong></div><input type="range" min={25} max={500} step={25} value={rowsLimit} onChange={(e) => setRowsLimit(Number(e.target.value))} /></label><label style={{ display: 'grid', gap: 8, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>ระดับการตรวจ</span><strong>{profile === 'balanced' ? 'ปกติ' : profile === 'strict' ? 'เข้มงวด' : 'ละเอียดมาก'}</strong></div><select value={profile} onChange={(e) => setProfile(e.target.value as Profile)} style={{ padding: 14, borderRadius: 12, border: `1px solid ${t.border}`, background: t.panel, color: t.text, fontSize: 17 }}><option value="balanced">ปกติ</option><option value="strict">เข้มงวด</option><option value="forensic">ละเอียดมาก</option></select></label></div></div>}
           </>
         )}
       </div>
