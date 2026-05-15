@@ -1,5 +1,5 @@
-import DoitAppCore from './DoitAppCore';
+import DoitAppDb from './DoitAppDb';
 
 export default function App() {
-  return <DoitAppCore />;
+  return <DoitAppDb />;
 }
