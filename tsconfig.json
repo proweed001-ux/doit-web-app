@@ -23,6 +23,7 @@
   "include": [
     "src/main.tsx",
     "src/App.tsx",
+    "src/DoitAppShared.tsx",
     "src/DoitAppThai.tsx",
     "src/lib/**/*.ts"
   ],
