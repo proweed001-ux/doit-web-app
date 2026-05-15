@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { DEFAULT_DB, downloadJson, downloadText, safeParse, type DB, type Session } from './lib/dataset';
 import { exportDatabase, parseDatabaseFile } from './lib/persistence';
 import { filterRows, limitRows, summarizeHeaders } from './lib/runtimeOptimizations';
@@ -149,16 +149,24 @@ export default function DoitAppLean() {
   const [status, setStatus] = useState('พร้อมใช้งาน');
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [workbook, setWorkbook] = useState<Workbook | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
 
   const t = theme(dark);
   const active = workbook?.sheets[activeSheet] ?? null;
-  const filteredRows = useMemo(() => (active ? filterRows(active.rows, query) : []), [active, query]);
+  const filteredRows = useMemo(() => (active ? filterRows(active.rows, deferredQuery) : []), [active, deferredQuery]);
   const visibleRows = useMemo(() => limitRows(filteredRows, rowsLimit), [filteredRows, rowsLimit]);
-  const allAnomalies = workbook?.sheets.flatMap((s) => s.anomalies) ?? [];
-  const allStores = workbook?.sheets.flatMap((s) => s.storeSummary.map((x) => ({ ...x, sheet: s.name }))) ?? [];
-  const allTod = workbook?.sheets.flatMap((s) => s.todSummary.map((x) => ({ ...x, sheet: s.name }))) ?? [];
+  const workbookSnapshots = useMemo(() => {
+    const sheets = workbook?.sheets ?? [];
+    return {
+      anomalies: sheets.flatMap((s) => s.anomalies),
+      stores: sheets.flatMap((s) => s.storeSummary.map((x) => ({ ...x, sheet: s.name }))),
+      tod: sheets.flatMap((s) => s.todSummary.map((x) => ({ ...x, sheet: s.name }))),
+      report: workbook?.reportMarkdown ?? '',
+      relations: workbook?.relations ?? [],
+    };
+  }, [workbook]);
 
   useEffect(() => {
     saveJson(AUTH_KEY, session);
@@ -216,11 +224,6 @@ export default function DoitAppLean() {
     persistWorkbook(next);
     setDB((prev) => ({ ...prev, templates: { ...prev.templates, [active.name]: { ...active.mapping, [field]: header || undefined } } }));
   }
-
-  useEffect(() => {
-    if (!workbook || view !== 'reports') return;
-    // no-op; keeps report preview derived only when visible
-  }, [workbook, view]);
 
   const btn = (id: View) => ({ padding: '10px 14px', borderRadius: 999, border: `1px solid ${view === id ? t.accent : t.border}`, background: view === id ? `${t.accent}22` : t.panel, color: t.text, fontWeight: 700 as const, cursor: 'pointer' });
   const shell = { minHeight: '100vh', background: t.shell, color: t.text, fontFamily: 'Inter, system-ui, sans-serif' } as const;
@@ -295,7 +298,7 @@ export default function DoitAppLean() {
                 <div style={{ ...panel, padding: 18 }}>
                   <div style={{ fontWeight: 800, fontSize: 18 }}>Top anomalies</div>
                   <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
-                    {allAnomalies.slice(0, 12).map((a) => <div key={`${a.sheet}-${a.rowIndex}`} style={{ padding: 12, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><strong>{a.sheet} · {a.invoiceNo || `Row ${a.rowIndex + 1}`}</strong><span style={{ color: t.danger, fontWeight: 800 }}>score {a.score}</span></div><div style={{ color: t.muted, marginTop: 4, fontSize: 12 }}>{a.reasons.join(' · ') || 'normal'}</div></div>)}
+                    {workbookSnapshots.anomalies.slice(0, 12).map((a) => <div key={`${a.sheet}-${a.rowIndex}`} style={{ padding: 12, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><strong>{a.sheet} · {a.invoiceNo || `Row ${a.rowIndex + 1}`}</strong><span style={{ color: t.danger, fontWeight: 800 }}>score {a.score}</span></div><div style={{ color: t.muted, marginTop: 4, fontSize: 12 }}>{a.reasons.join(' · ') || 'normal'}</div></div>)}
                   </div>
                 </div>
               </div>
@@ -356,11 +359,11 @@ export default function DoitAppLean() {
               </div>
             )}
 
-            {workbook && view === 'relations' && <div style={{ marginTop: 22, ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>Cross-sheet relation engine</div><div style={{ marginTop: 12, display: 'grid', gap: 10 }}>{workbook.relations.length ? workbook.relations.map((r, idx) => <div key={idx} style={{ padding: 12, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><strong>{r.leftSheet} ↔ {r.rightSheet}</strong><div style={{ color: t.muted, fontSize: 12 }}>overlap: {r.overlap} · left: {r.leftOnly} · right: {r.rightOnly}</div></div>) : <div style={{ color: t.muted }}>No strong cross-sheet relation detected</div>}</div></div>}
+            {workbook && view === 'relations' && <div style={{ marginTop: 22, ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>Cross-sheet relation engine</div><div style={{ marginTop: 12, display: 'grid', gap: 10 }}>{workbookSnapshots.relations.length ? workbookSnapshots.relations.map((r, idx) => <div key={idx} style={{ padding: 12, borderRadius: 12, background: card.background, border: `1px solid ${t.border}` }}><strong>{r.leftSheet} ↔ {r.rightSheet}</strong><div style={{ color: t.muted, fontSize: 12 }}>overlap: {r.overlap} · left: {r.leftOnly} · right: {r.rightOnly}</div></div>) : <div style={{ color: t.muted }}>No strong cross-sheet relation detected</div>}</div></div>}
 
-            {workbook && view === 'tod' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>TOD / Store aggregation</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 12 }}>{allStores.slice(0, 8).map((s, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 800 }}>{s.store}</div><div style={{ color: t.muted, fontSize: 12 }}>{s.sheet}</div><div style={{ marginTop: 8 }}>count {s.count}</div><div>amount {Number.isInteger(s.amount) ? s.amount.toLocaleString() : s.amount.toFixed(2)}</div><div style={{ color: t.danger }}>suspicious {s.suspicious}</div></div>)}</div></div><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>TOD buckets</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>{allTod.map((x, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 800 }}>{x.bucket}</div><div style={{ color: t.muted, fontSize: 12 }}>{x.sheet}</div><div>count {x.count}</div><div>amount {Number.isInteger(x.amount) ? x.amount.toLocaleString() : x.amount.toFixed(2)}</div></div>)}</div></div></div>}
+            {workbook && view === 'tod' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>TOD / Store aggregation</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 12 }}>{workbookSnapshots.stores.slice(0, 8).map((s, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 800 }}>{s.store}</div><div style={{ color: t.muted, fontSize: 12 }}>{s.sheet}</div><div style={{ marginTop: 8 }}>count {s.count}</div><div>amount {Number.isInteger(s.amount) ? s.amount.toLocaleString() : s.amount.toFixed(2)}</div><div style={{ color: t.danger }}>suspicious {s.suspicious}</div></div>)}</div></div><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>TOD buckets</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>{workbookSnapshots.tod.map((x, idx) => <div key={idx} style={{ ...card, padding: 14 }}><div style={{ fontWeight: 800 }}>{x.bucket}</div><div style={{ color: t.muted, fontSize: 12 }}>{x.sheet}</div><div>count {x.count}</div><div>amount {Number.isInteger(x.amount) ? x.amount.toLocaleString() : x.amount.toFixed(2)}</div></div>)}</div></div></div>}
 
-            {workbook && view === 'reports' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><div style={{ fontWeight: 800, fontSize: 18 }}>Report generator</div><div style={{ color: t.muted, marginTop: 4 }}>Markdown summary of workbook, anomalies and relations</div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}><button onClick={exportReport} style={btn('reports')}>Download MD</button><button onClick={exportJson} style={btn('reports')}>Download JSON</button></div></div><pre style={{ whiteSpace: 'pre-wrap', marginTop: 16, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}`, overflowX: 'auto' }}>{latestReport}</pre></div></div>}
+            {workbook && view === 'reports' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><div style={{ fontWeight: 800, fontSize: 18 }}>Report generator</div><div style={{ color: t.muted, marginTop: 4 }}>Markdown summary of workbook, anomalies and relations</div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}><button onClick={exportReport} style={btn('reports')}>Download MD</button><button onClick={exportJson} style={btn('reports')}>Download JSON</button></div></div><pre style={{ whiteSpace: 'pre-wrap', marginTop: 16, padding: 16, borderRadius: 14, background: t.card, border: `1px solid ${t.border}`, overflowX: 'auto' }}>{workbookSnapshots.report}</pre></div></div>}
 
             {view === 'database' && <div style={{ marginTop: 22, display: 'grid', gap: 18 }}><div style={{ ...panel, padding: 18 }}><div style={{ fontWeight: 800, fontSize: 18 }}>Persistent local database</div><div style={{ color: t.muted, marginTop: 4 }}>Sessions, workbooks, reports and templates are saved in browser storage.</div><div style={{ display: 'grid', gap: 10, marginTop: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>Sessions</span><strong>{db.sessions.length}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>Workbooks</span><strong>{db.workbooks.length}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>Reports</span><strong>{db.reports.length}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: t.muted }}>Templates</span><strong>{Object.keys(db.templates).length}</strong></div></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}><button onClick={handleExportDatabase} style={btn('database')}>Export DB</button><label style={{ cursor: 'pointer', padding: '10px 14px', borderRadius: 12, border: `1px solid ${t.border}`, background: t.panel, color: t.text, fontWeight: 700 }}>
                       Import DB
