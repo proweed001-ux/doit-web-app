@@ -23,7 +23,7 @@
   "include": [
     "src/main.tsx",
     "src/App.tsx",
-    "src/DoitPivotApp.tsx",
+    "src/DoitPivotApp2.tsx",
     "src/vite-env.d.ts"
   ],
   "exclude": [
@@ -34,6 +34,7 @@
     "src/DoitAppPro.tsx",
     "src/DoitAppShared.tsx",
     "src/DoitAppThai.tsx",
+    "src/DoitPivotApp.tsx",
     "src/pages/**",
     "src/components/**"
   ],
