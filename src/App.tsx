@@ -1,5 +1,5 @@
-import DoitAppShared from './DoitAppShared';
+import DoitPivotApp from './DoitPivotApp';
 
 export default function App() {
-  return <DoitAppShared />;
+  return <DoitPivotApp />;
 }
