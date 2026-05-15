@@ -23,13 +23,14 @@
   "include": [
     "src/main.tsx",
     "src/App.tsx",
-    "src/DoitAppLean.tsx",
+    "src/DoitAppThai.tsx",
     "src/lib/**/*.ts"
   ],
   "exclude": [
     "src/DoitApp.tsx",
     "src/DoitAppCore.tsx",
     "src/DoitAppDb.tsx",
+    "src/DoitAppLean.tsx",
     "src/DoitAppPro.tsx",
     "src/pages/**",
     "src/components/**"
