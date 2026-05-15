@@ -20,6 +20,19 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"],
+  "include": [
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/DoitAppLean.tsx",
+    "src/lib/**/*.ts"
+  ],
+  "exclude": [
+    "src/DoitApp.tsx",
+    "src/DoitAppCore.tsx",
+    "src/DoitAppDb.tsx",
+    "src/DoitAppPro.tsx",
+    "src/pages/**",
+    "src/components/**"
+  ],
   "references": []
 }
