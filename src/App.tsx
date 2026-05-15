@@ -1,5 +1,5 @@
-import DoitAppLean from './DoitAppLean';
+import DoitAppThai from './DoitAppThai';
 
 export default function App() {
-  return <DoitAppLean />;
+  return <DoitAppThai />;
 }
